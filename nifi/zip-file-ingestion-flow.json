@@ -1,0 +1,626 @@
+{
+  "flowEncodingVersion": "1.0",
+  "nifiVersion": "2.5.0",
+  "snapshotMetadata": {
+    "author": "Codex",
+    "comments": "Single process group for ZIP file ingestion, archival, extraction, and PostgreSQL metadata tracking.",
+    "timestamp": 1782777600000
+  },
+  "flowContents": {
+    "identifier": "43badacf-b3f6-4785-b124-97cd2d58da8f",
+    "name": "ZIP File Ingestion",
+    "comments": "Imports as one process group. Configure and enable the DBCPConnectionPool controller service after import.",
+    "position": {
+      "x": 0,
+      "y": 0
+    },
+    "controllerServices": [
+      {
+        "identifier": "13822df0-736a-42bb-972c-ff5cf59ce3e2",
+        "name": "PostgreSQL DBCP Connection Pool",
+        "type": "org.apache.nifi.dbcp.DBCPConnectionPool",
+        "bundle": {
+          "group": "org.apache.nifi",
+          "artifact": "nifi-dbcp-service-nar",
+          "version": "2.5.0"
+        },
+        "comments": "Requires PostgreSQL JDBC driver configured in NiFi.",
+        "properties": {
+          "Database Connection URL": "jdbc:postgresql://${POSTGRES_HOST}:${POSTGRES_PORT}/${POSTGRES_DB}",
+          "Database Driver Class Name": "org.postgresql.Driver",
+          "Database User": "${POSTGRES_USER}",
+          "Password": "${POSTGRES_PASSWORD}",
+          "Max Wait Time": "30 sec",
+          "Max Total Connections": "8"
+        }
+      }
+    ],
+    "processors": [
+      {
+        "identifier": "9fba7e44-4583-4c6a-bfc8-48a8c3662f0e",
+        "name": "List Incoming ZIP Files",
+        "type": "org.apache.nifi.processors.standard.ListFile",
+        "bundle": {
+          "group": "org.apache.nifi",
+          "artifact": "nifi-standard-nar",
+          "version": "2.5.0"
+        },
+        "position": {
+          "x": 0,
+          "y": 0
+        },
+        "schedulingPeriod": "30 sec",
+        "schedulingStrategy": "TIMER_DRIVEN",
+        "properties": {
+          "Input Directory": "${BASE_PATH}",
+          "File Filter": ".*\\.zip",
+          "Recurse Subdirectories": "false",
+          "Minimum File Age": "0 sec",
+          "Ignore Hidden Files": "true"
+        },
+        "autoTerminatedRelationships": [
+          "failure"
+        ]
+      },
+      {
+        "identifier": "70b4bd57-bb45-4205-ba0c-996f1fe5a3c3",
+        "name": "Set Parent ZIP Attributes",
+        "type": "org.apache.nifi.processors.attributes.UpdateAttribute",
+        "bundle": {
+          "group": "org.apache.nifi",
+          "artifact": "nifi-update-attribute-nar",
+          "version": "2.5.0"
+        },
+        "position": {
+          "x": 320,
+          "y": 0
+        },
+        "properties": {
+          "zip.id": "${UUID()}",
+          "parent.id": "${zip.id}",
+          "parent.zip.name": "${filename}",
+          "file.extension": "${filename:substringAfterLast('.')}",
+          "source.file.path": "${absolute.path}/${filename}"
+        }
+      },
+      {
+        "identifier": "b3004e8c-fe28-423c-8799-510fc8447c31",
+        "name": "Insert Parent SUBMITTED",
+        "type": "org.apache.nifi.processors.standard.PutSQL",
+        "bundle": {
+          "group": "org.apache.nifi",
+          "artifact": "nifi-standard-nar",
+          "version": "2.5.0"
+        },
+        "position": {
+          "x": 640,
+          "y": 0
+        },
+        "properties": {
+          "JDBC Connection Pool": "13822df0-736a-42bb-972c-ff5cf59ce3e2",
+          "SQL Statement": "INSERT INTO file_metadata (id, name, extension, file_size, submitted_at, file_status, parent_zip_name, parent_id) VALUES ('${zip.id}'::uuid, $$${filename}$$, $$${file.extension}$$, ${fileSize}, now(), 'SUBMITTED', $$${filename}$$, NULL);",
+          "Support Fragmented Transactions": "false",
+          "Obtain Generated Keys": "false"
+        },
+        "autoTerminatedRelationships": [
+          "retry"
+        ]
+      },
+      {
+        "identifier": "69e88ae6-4744-41b7-93c5-70b510d67b5d",
+        "name": "Fetch And Archive ZIP",
+        "type": "org.apache.nifi.processors.standard.FetchFile",
+        "bundle": {
+          "group": "org.apache.nifi",
+          "artifact": "nifi-standard-nar",
+          "version": "2.5.0"
+        },
+        "position": {
+          "x": 960,
+          "y": 0
+        },
+        "properties": {
+          "File to Fetch": "${source.file.path}",
+          "Completion Strategy": "Move File",
+          "Move Destination Directory": "${BASE_PATH}${ARCHIVE_ZIP_PATH}",
+          "Move Conflict Strategy": "Fail",
+          "Log level when file not found": "ERROR"
+        }
+      },
+      {
+        "identifier": "f0535966-e604-44a7-8917-2011e5424292",
+        "name": "Update Parent ARCHIVED",
+        "type": "org.apache.nifi.processors.standard.PutSQL",
+        "bundle": {
+          "group": "org.apache.nifi",
+          "artifact": "nifi-standard-nar",
+          "version": "2.5.0"
+        },
+        "position": {
+          "x": 1280,
+          "y": 0
+        },
+        "properties": {
+          "JDBC Connection Pool": "13822df0-736a-42bb-972c-ff5cf59ce3e2",
+          "SQL Statement": "UPDATE file_metadata SET file_status = 'ARCHIVED' WHERE id = '${zip.id}'::uuid;",
+          "Support Fragmented Transactions": "false",
+          "Obtain Generated Keys": "false"
+        },
+        "autoTerminatedRelationships": [
+          "retry"
+        ]
+      },
+      {
+        "identifier": "d69c521e-bddd-4a38-aa0b-63a5cfe531c4",
+        "name": "Validate ZIP Filename",
+        "type": "org.apache.nifi.processors.standard.RouteOnAttribute",
+        "bundle": {
+          "group": "org.apache.nifi",
+          "artifact": "nifi-standard-nar",
+          "version": "2.5.0"
+        },
+        "position": {
+          "x": 1600,
+          "y": 0
+        },
+        "properties": {
+          "Routing Strategy": "Route to Property name",
+          "valid_zip_name": "${filename:matches(${ZIP_NAME_REGEX})}"
+        }
+      },
+      {
+        "identifier": "84b3da35-d08f-4882-9b3c-a78619d3994b",
+        "name": "Extract ZIP",
+        "type": "org.apache.nifi.processors.standard.UnpackContent",
+        "bundle": {
+          "group": "org.apache.nifi",
+          "artifact": "nifi-standard-nar",
+          "version": "2.5.0"
+        },
+        "position": {
+          "x": 1920,
+          "y": 0
+        },
+        "properties": {
+          "Packaging Format": "zip"
+        },
+        "autoTerminatedRelationships": [
+          "original"
+        ]
+      },
+      {
+        "identifier": "f599f0c2-87a5-414c-b39e-20271472a7c7",
+        "name": "Set Child File Attributes",
+        "type": "org.apache.nifi.processors.attributes.UpdateAttribute",
+        "bundle": {
+          "group": "org.apache.nifi",
+          "artifact": "nifi-update-attribute-nar",
+          "version": "2.5.0"
+        },
+        "position": {
+          "x": 2240,
+          "y": 0
+        },
+        "properties": {
+          "child.id": "${UUID()}",
+          "child.parent.id": "${zip.id}",
+          "child.extension": "${filename:substringAfterLast('.')}"
+        }
+      },
+      {
+        "identifier": "b4b3431a-60cd-496b-9d4b-5ba83d67aee7",
+        "name": "Insert Child SUBMITTED",
+        "type": "org.apache.nifi.processors.standard.PutSQL",
+        "bundle": {
+          "group": "org.apache.nifi",
+          "artifact": "nifi-standard-nar",
+          "version": "2.5.0"
+        },
+        "position": {
+          "x": 2560,
+          "y": 0
+        },
+        "properties": {
+          "JDBC Connection Pool": "13822df0-736a-42bb-972c-ff5cf59ce3e2",
+          "SQL Statement": "INSERT INTO file_metadata (id, name, extension, file_size, submitted_at, file_status, parent_zip_name, parent_id) VALUES ('${child.id}'::uuid, $$${filename}$$, $$${child.extension}$$, ${fileSize}, now(), 'SUBMITTED', $$${parent.zip.name}$$, '${zip.id}'::uuid);",
+          "Support Fragmented Transactions": "false",
+          "Obtain Generated Keys": "false"
+        },
+        "autoTerminatedRelationships": [
+          "retry"
+        ]
+      },
+      {
+        "identifier": "28473dfa-0056-4c9a-83f9-f95c1e3c06b6",
+        "name": "Archive Child File",
+        "type": "org.apache.nifi.processors.standard.PutFile",
+        "bundle": {
+          "group": "org.apache.nifi",
+          "artifact": "nifi-standard-nar",
+          "version": "2.5.0"
+        },
+        "position": {
+          "x": 2880,
+          "y": 0
+        },
+        "properties": {
+          "Directory": "${BASE_PATH}${FILE_ARCHIVE_PATH}",
+          "Conflict Resolution Strategy": "fail",
+          "Create Missing Directories": "true"
+        }
+      },
+      {
+        "identifier": "bdf36a04-5924-4caa-9173-a13791964725",
+        "name": "Update Child ARCHIVED",
+        "type": "org.apache.nifi.processors.standard.PutSQL",
+        "bundle": {
+          "group": "org.apache.nifi",
+          "artifact": "nifi-standard-nar",
+          "version": "2.5.0"
+        },
+        "position": {
+          "x": 3200,
+          "y": 0
+        },
+        "properties": {
+          "JDBC Connection Pool": "13822df0-736a-42bb-972c-ff5cf59ce3e2",
+          "SQL Statement": "UPDATE file_metadata SET file_status = 'ARCHIVED' WHERE id = '${child.id}'::uuid;",
+          "Support Fragmented Transactions": "false",
+          "Obtain Generated Keys": "false"
+        },
+        "autoTerminatedRelationships": [
+          "retry"
+        ]
+      },
+      {
+        "identifier": "cd49a901-a44a-428a-9dd5-bde4e4457f6e",
+        "name": "Update Parent FAILED",
+        "type": "org.apache.nifi.processors.standard.PutSQL",
+        "bundle": {
+          "group": "org.apache.nifi",
+          "artifact": "nifi-standard-nar",
+          "version": "2.5.0"
+        },
+        "position": {
+          "x": 1920,
+          "y": 360
+        },
+        "properties": {
+          "JDBC Connection Pool": "13822df0-736a-42bb-972c-ff5cf59ce3e2",
+          "SQL Statement": "UPDATE file_metadata SET file_status = 'FAILED' WHERE id = '${zip.id}'::uuid;",
+          "Support Fragmented Transactions": "false",
+          "Obtain Generated Keys": "false"
+        },
+        "autoTerminatedRelationships": [
+          "retry"
+        ]
+      },
+      {
+        "identifier": "7ecfc42c-5edc-4af5-aeb6-87ee615c9299",
+        "name": "Update Child FAILED",
+        "type": "org.apache.nifi.processors.standard.PutSQL",
+        "bundle": {
+          "group": "org.apache.nifi",
+          "artifact": "nifi-standard-nar",
+          "version": "2.5.0"
+        },
+        "position": {
+          "x": 3200,
+          "y": 360
+        },
+        "properties": {
+          "JDBC Connection Pool": "13822df0-736a-42bb-972c-ff5cf59ce3e2",
+          "SQL Statement": "UPDATE file_metadata SET file_status = 'FAILED' WHERE id = '${child.id}'::uuid;",
+          "Support Fragmented Transactions": "false",
+          "Obtain Generated Keys": "false"
+        },
+        "autoTerminatedRelationships": [
+          "retry"
+        ]
+      },
+      {
+        "identifier": "3dbda5bf-d4ad-4d51-a870-e7919fb68d22",
+        "name": "Log Failure",
+        "type": "org.apache.nifi.processors.standard.LogAttribute",
+        "bundle": {
+          "group": "org.apache.nifi",
+          "artifact": "nifi-standard-nar",
+          "version": "2.5.0"
+        },
+        "position": {
+          "x": 2240,
+          "y": 360
+        },
+        "properties": {
+          "Log Level": "error",
+          "Log Payload": "false",
+          "Attributes to Log": "filename,absolute.path,zip.id,child.id,parent.zip.name"
+        },
+        "autoTerminatedRelationships": [
+          "success"
+        ]
+      },
+      {
+        "identifier": "01fa8617-fcc4-4094-b49d-204c9f7f0b4c",
+        "name": "Log Completed Child",
+        "type": "org.apache.nifi.processors.standard.LogAttribute",
+        "bundle": {
+          "group": "org.apache.nifi",
+          "artifact": "nifi-standard-nar",
+          "version": "2.5.0"
+        },
+        "position": {
+          "x": 3520,
+          "y": 0
+        },
+        "properties": {
+          "Log Level": "info",
+          "Log Payload": "false",
+          "Attributes to Log": "filename,child.id,zip.id,parent.zip.name"
+        },
+        "autoTerminatedRelationships": [
+          "success"
+        ]
+      }
+    ],
+    "connections": [
+      {
+        "identifier": "a08fd688-c826-4e6c-83be-9a9ebd026821",
+        "name": "listed zip",
+        "source": {
+          "id": "9fba7e44-4583-4c6a-bfc8-48a8c3662f0e",
+          "type": "PROCESSOR"
+        },
+        "destination": {
+          "id": "70b4bd57-bb45-4205-ba0c-996f1fe5a3c3",
+          "type": "PROCESSOR"
+        },
+        "selectedRelationships": [
+          "success"
+        ]
+      },
+      {
+        "identifier": "15cbeb78-60bd-4837-8af3-1e5d931a4a9f",
+        "name": "parent attrs set",
+        "source": {
+          "id": "70b4bd57-bb45-4205-ba0c-996f1fe5a3c3",
+          "type": "PROCESSOR"
+        },
+        "destination": {
+          "id": "b3004e8c-fe28-423c-8799-510fc8447c31",
+          "type": "PROCESSOR"
+        },
+        "selectedRelationships": [
+          "success"
+        ]
+      },
+      {
+        "identifier": "a91bdacc-fce8-4bfa-9c02-c4d2a12cc307",
+        "name": "parent submitted inserted",
+        "source": {
+          "id": "b3004e8c-fe28-423c-8799-510fc8447c31",
+          "type": "PROCESSOR"
+        },
+        "destination": {
+          "id": "69e88ae6-4744-41b7-93c5-70b510d67b5d",
+          "type": "PROCESSOR"
+        },
+        "selectedRelationships": [
+          "success"
+        ]
+      },
+      {
+        "identifier": "3cb98ee9-b4ca-4764-8d0b-742682ebc7f6",
+        "name": "zip archived",
+        "source": {
+          "id": "69e88ae6-4744-41b7-93c5-70b510d67b5d",
+          "type": "PROCESSOR"
+        },
+        "destination": {
+          "id": "f0535966-e604-44a7-8917-2011e5424292",
+          "type": "PROCESSOR"
+        },
+        "selectedRelationships": [
+          "success"
+        ]
+      },
+      {
+        "identifier": "b322d7c0-8a60-40cc-9636-f06404f5f7e9",
+        "name": "zip fetch failed",
+        "source": {
+          "id": "69e88ae6-4744-41b7-93c5-70b510d67b5d",
+          "type": "PROCESSOR"
+        },
+        "destination": {
+          "id": "cd49a901-a44a-428a-9dd5-bde4e4457f6e",
+          "type": "PROCESSOR"
+        },
+        "selectedRelationships": [
+          "failure",
+          "not.found",
+          "permission.denied"
+        ]
+      },
+      {
+        "identifier": "1c5935a5-e6d0-45db-94b0-f01b58dd890e",
+        "name": "parent archived updated",
+        "source": {
+          "id": "f0535966-e604-44a7-8917-2011e5424292",
+          "type": "PROCESSOR"
+        },
+        "destination": {
+          "id": "d69c521e-bddd-4a38-aa0b-63a5cfe531c4",
+          "type": "PROCESSOR"
+        },
+        "selectedRelationships": [
+          "success"
+        ]
+      },
+      {
+        "identifier": "36d56e10-2fd8-4f5d-9218-3509bdc41a90",
+        "name": "valid zip name",
+        "source": {
+          "id": "d69c521e-bddd-4a38-aa0b-63a5cfe531c4",
+          "type": "PROCESSOR"
+        },
+        "destination": {
+          "id": "84b3da35-d08f-4882-9b3c-a78619d3994b",
+          "type": "PROCESSOR"
+        },
+        "selectedRelationships": [
+          "valid_zip_name"
+        ]
+      },
+      {
+        "identifier": "f6c2c292-1eaf-42ec-8f6e-49796acbaf18",
+        "name": "invalid zip name",
+        "source": {
+          "id": "d69c521e-bddd-4a38-aa0b-63a5cfe531c4",
+          "type": "PROCESSOR"
+        },
+        "destination": {
+          "id": "cd49a901-a44a-428a-9dd5-bde4e4457f6e",
+          "type": "PROCESSOR"
+        },
+        "selectedRelationships": [
+          "unmatched"
+        ]
+      },
+      {
+        "identifier": "db321b92-83a4-4634-a260-a37cd489c450",
+        "name": "zip extracted",
+        "source": {
+          "id": "84b3da35-d08f-4882-9b3c-a78619d3994b",
+          "type": "PROCESSOR"
+        },
+        "destination": {
+          "id": "f599f0c2-87a5-414c-b39e-20271472a7c7",
+          "type": "PROCESSOR"
+        },
+        "selectedRelationships": [
+          "success"
+        ]
+      },
+      {
+        "identifier": "92e73f08-9fe9-4747-aa08-6c0298bf6200",
+        "name": "zip extraction failed",
+        "source": {
+          "id": "84b3da35-d08f-4882-9b3c-a78619d3994b",
+          "type": "PROCESSOR"
+        },
+        "destination": {
+          "id": "cd49a901-a44a-428a-9dd5-bde4e4457f6e",
+          "type": "PROCESSOR"
+        },
+        "selectedRelationships": [
+          "failure"
+        ]
+      },
+      {
+        "identifier": "85b4e889-a5df-49e4-9ee8-04191d098efb",
+        "name": "child attrs set",
+        "source": {
+          "id": "f599f0c2-87a5-414c-b39e-20271472a7c7",
+          "type": "PROCESSOR"
+        },
+        "destination": {
+          "id": "b4b3431a-60cd-496b-9d4b-5ba83d67aee7",
+          "type": "PROCESSOR"
+        },
+        "selectedRelationships": [
+          "success"
+        ]
+      },
+      {
+        "identifier": "5982a052-503c-49d4-a94d-28784f03f19b",
+        "name": "child submitted inserted",
+        "source": {
+          "id": "b4b3431a-60cd-496b-9d4b-5ba83d67aee7",
+          "type": "PROCESSOR"
+        },
+        "destination": {
+          "id": "28473dfa-0056-4c9a-83f9-f95c1e3c06b6",
+          "type": "PROCESSOR"
+        },
+        "selectedRelationships": [
+          "success"
+        ]
+      },
+      {
+        "identifier": "f43ad5d7-6cc4-470b-9f6e-3efa48ee4ec6",
+        "name": "child archived",
+        "source": {
+          "id": "28473dfa-0056-4c9a-83f9-f95c1e3c06b6",
+          "type": "PROCESSOR"
+        },
+        "destination": {
+          "id": "bdf36a04-5924-4caa-9173-a13791964725",
+          "type": "PROCESSOR"
+        },
+        "selectedRelationships": [
+          "success"
+        ]
+      },
+      {
+        "identifier": "710d0fa5-18a8-490f-9f25-5762ec5e2f0a",
+        "name": "child archive failed",
+        "source": {
+          "id": "28473dfa-0056-4c9a-83f9-f95c1e3c06b6",
+          "type": "PROCESSOR"
+        },
+        "destination": {
+          "id": "7ecfc42c-5edc-4af5-aeb6-87ee615c9299",
+          "type": "PROCESSOR"
+        },
+        "selectedRelationships": [
+          "failure"
+        ]
+      },
+      {
+        "identifier": "5a622891-9adf-4f43-bacb-7156724df3f7",
+        "name": "child archived updated",
+        "source": {
+          "id": "bdf36a04-5924-4caa-9173-a13791964725",
+          "type": "PROCESSOR"
+        },
+        "destination": {
+          "id": "01fa8617-fcc4-4094-b49d-204c9f7f0b4c",
+          "type": "PROCESSOR"
+        },
+        "selectedRelationships": [
+          "success"
+        ]
+      },
+      {
+        "identifier": "ba942879-8ef2-4136-97be-30f6c2d83642",
+        "name": "parent failure logged",
+        "source": {
+          "id": "cd49a901-a44a-428a-9dd5-bde4e4457f6e",
+          "type": "PROCESSOR"
+        },
+        "destination": {
+          "id": "3dbda5bf-d4ad-4d51-a870-e7919fb68d22",
+          "type": "PROCESSOR"
+        },
+        "selectedRelationships": [
+          "success"
+        ]
+      },
+      {
+        "identifier": "591777a7-42bf-46b9-bfc6-72bd8f65539b",
+        "name": "child failure logged",
+        "source": {
+          "id": "7ecfc42c-5edc-4af5-aeb6-87ee615c9299",
+          "type": "PROCESSOR"
+        },
+        "destination": {
+          "id": "3dbda5bf-d4ad-4d51-a870-e7919fb68d22",
+          "type": "PROCESSOR"
+        },
+        "selectedRelationships": [
+          "success"
+        ]
+      }
+    ]
+  }
+}
