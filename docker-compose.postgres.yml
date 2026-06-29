@@ -1,0 +1,33 @@
+version: "3.8"
+
+services:
+  postgres:
+    image: postgres:16
+    container_name: file-ingestion-postgres
+    restart: unless-stopped
+
+    ports:
+      - "${POSTGRES_PORT:-5432}:5432"
+
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-file_ingestion}
+      POSTGRES_USER: ${POSTGRES_USER:-nifi}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-change_me}
+
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./database/file_metadata_postgres.sql:/docker-entrypoint-initdb.d/001_file_metadata.sql:ro
+
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-nifi} -d ${POSTGRES_DB:-file_ingestion}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+volumes:
+  postgres_data:
+
+networks:
+  default:
+    name: docker-shared-network
+
