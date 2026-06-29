@@ -5,6 +5,8 @@ services:
     image: postgres:16
     container_name: file-ingestion-postgres
     restart: unless-stopped
+    env_file:
+      - .env
 
     ports:
       - "${POSTGRES_PORT:-5432}:5432"
@@ -30,4 +32,3 @@ volumes:
 networks:
   default:
     name: docker-shared-network
-
